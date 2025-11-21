@@ -137,7 +137,7 @@ if uploaded_file:
         st.download_button(
             label=f"⬇️ Download Page {i+1} (WebP)",
             data=img_bytes,
-            file_name=f"page_{i+1}.webp",
+            file_name=f"{i+1}.webp",
             mime="image/webp"
         )
 
