@@ -2,6 +2,8 @@ import streamlit as st
 from PIL import Image
 import io
 import gc
+import os
+import tempfile
 import streamlit.components.v1 as components
 from pdf2image import convert_from_bytes
 
@@ -42,13 +44,6 @@ h1, h2, h3, h4, h5, h6 {
     padding: 10px;
     margin: 10px 0;
     background: rgba(0,255,120,0.05);
-}
-/* Ad container styling */
-.ad-container {
-    margin: 10px 0;
-    border: 1px solid #333;
-    border-radius: 5px;
-    overflow: hidden;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -106,35 +101,8 @@ if 'total_pages' not in st.session_state:
     st.session_state.total_pages = 0
 if 'processing_complete' not in st.session_state:
     st.session_state.processing_complete = False
-
-def get_pdf_page_count(pdf_bytes):
-    """Try different PDF libraries to get page count"""
-    try:
-        # Try pypdf first (newest)
-        import pypdf
-        pdf_reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-        return len(pdf_reader.pages)
-    except ImportError:
-        pass
-    
-    try:
-        # Try PyPDF2
-        import PyPDF2
-        pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-        return len(pdf_reader.pages)
-    except ImportError:
-        pass
-    
-    try:
-        # Try PyPDF4
-        import PyPDF4
-        pdf_reader = PyPDF4.PdfReader(io.BytesIO(pdf_bytes))
-        return len(pdf_reader.pages)
-    except ImportError:
-        pass
-    
-    # If no PDF libraries are available, estimate based on file size
-    return None
+if 'temp_files' not in st.session_state:
+    st.session_state.temp_files = []
 
 # ---------- FILE UPLOAD ----------
 uploaded_file = st.file_uploader("Upload your PDF below 👇", type=["pdf"])
@@ -148,6 +116,14 @@ if uploaded_file and 'previous_file' in st.session_state:
         st.session_state.converted_images = []
         st.session_state.processing_complete = False
         st.session_state.total_pages = 0
+        # Clean up temp files
+        for temp_file in st.session_state.temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except:
+                pass
+        st.session_state.temp_files = []
 
 if uploaded_file:
     try:
@@ -157,117 +133,130 @@ if uploaded_file:
         # Get file size warning
         file_size = len(uploaded_file.getvalue()) / (1024 * 1024)  # MB
         
-        if file_size > 5:
-            st.warning(f"⚠️ Large PDF detected: {file_size:.1f} MB. Using single-page processing...")
-            single_page_mode = True
-        else:
-            single_page_mode = False
-
-        # Configuration options
+        if file_size > 2:
+            st.warning(f"⚠️ Large PDF detected: {file_size:.1f} MB. Using ultra-lightweight processing...")
+        
+        # Configuration options - MORE CONSERVATIVE
         col1, col2 = st.columns(2)
         with col1:
-            dpi = st.slider("DPI Quality", min_value=100, max_value=200, value=100, step=50,
-                           help="Lower DPI uses less memory")
+            dpi = st.slider("DPI Quality", min_value=72, max_value=150, value=100, step=25,
+                           help="Lower DPI uses much less memory")
         with col2:
-            quality = st.slider("WebP Quality", min_value=50, max_value=90, value=80, step=5,
+            quality = st.slider("WebP Quality", min_value=50, max_value=85, value=75, step=5,
                                help="Lower quality uses less memory")
-        
-        # Process PDF if not already processed or if user wants to reprocess
-        if (not st.session_state.processing_complete or 
-            st.button("🚀 Start Conversion", type="primary")):
-            
-            with st.spinner("⏳ Reading PDF file..."):
-                pdf_bytes = uploaded_file.getvalue()
-            
-            # Get total pages using our function
-            total_pages = get_pdf_page_count(pdf_bytes)
-            if total_pages is None:
-                # Estimate based on file size if no PDF library available
-                total_pages = max(1, int(file_size * 3))
-                st.info(f"📄 Estimated pages: {total_pages} (install pypdf for exact count)")
-            else:
-                st.info(f"📄 PDF has {total_pages} pages")
-            
-            st.session_state.total_pages = total_pages
 
+        # ULTRA-LIGHTWEIGHT PROCESSING - ONE PAGE AT A TIME
+        if st.button("🚀 Start Conversion", type="primary"):
+            
+            # Save PDF to temporary file to avoid memory issues
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_pdf:
+                tmp_pdf.write(uploaded_file.getvalue())
+                pdf_path = tmp_pdf.name
+                st.session_state.temp_files.append(pdf_path)
+            
+            # Estimate total pages
+            estimated_pages = max(1, int(file_size * 2))
+            st.info(f"📄 Processing approximately {estimated_pages} pages (one at a time)...")
+            
             progress_bar = st.progress(0)
             status_text = st.empty()
             
             # Clear previous images
             st.session_state.converted_images = []
             
-            # Process pages
-            if single_page_mode or file_size > 10:
-                batch_size = 1
-            else:
-                batch_size = min(3, total_pages)
-
             successful_conversions = 0
+            max_pages_to_process = min(estimated_pages, 50)  # Safety limit
             
-            for batch_start in range(0, total_pages, batch_size):
-                batch_end = min(batch_start + batch_size, total_pages)
-                
-                status_text.text(f"🔄 Processing pages {batch_start + 1} to {batch_end}...")
+            # PROCESS ONE PAGE AT A TIME
+            for page_num in range(1, max_pages_to_process + 1):
+                status_text.text(f"🔄 Processing page {page_num}...")
                 
                 try:
+                    # Convert ONLY ONE PAGE with minimal settings
                     pages = convert_from_bytes(
-                        pdf_bytes, 
+                        uploaded_file.getvalue(), 
                         dpi=dpi, 
-                        first_page=batch_start + 1, 
-                        last_page=batch_end,
+                        first_page=page_num, 
+                        last_page=page_num,
                         thread_count=1,
+                        use_pdftocairo=True,  # More memory efficient
+                        strict=False  # Continue on errors
                     )
                     
-                    for i, page in enumerate(pages):
-                        actual_page_num = batch_start + i + 1
-                        
-                        # Resize if too large
-                        MAX_SIZE = 4000
-                        w, h = page.size
-                        if max(w, h) > MAX_SIZE:
-                            ratio = MAX_SIZE / max(w, h)
-                            new_w = int(w * ratio)
-                            new_h = int(h * ratio)
-                            page = page.resize((new_w, new_h), Image.LANCZOS)
-                        
-                        # Convert to WebP and store in session state
-                        img_bytes = io.BytesIO()
-                        page.save(img_bytes, format="WEBP", quality=quality, optimize=True)
-                        img_bytes.seek(0)
-                        
-                        # Store image data in session state
-                        st.session_state.converted_images.append({
-                            'page_num': actual_page_num,
-                            'image_data': img_bytes.getvalue(),
-                            'size': (new_w, new_h) if max(w, h) > MAX_SIZE else (w, h)
-                        })
-                        
-                        successful_conversions += 1
-                        del page
-                        del img_bytes
-                        gc.collect()
+                    if not pages:
+                        # No more pages to process
+                        break
                     
+                    page = pages[0]
+                    
+                    # Resize if too large - VERY CONSERVATIVE
+                    MAX_SIZE = 2000  # Much smaller to save memory
+                    w, h = page.size
+                    if max(w, h) > MAX_SIZE:
+                        ratio = MAX_SIZE / max(w, h)
+                        new_w = int(w * ratio)
+                        new_h = int(h * ratio)
+                        page = page.resize((new_w, new_h), Image.LANCZOS)
+                    
+                    # Convert to WebP and save to temporary file
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.webp') as tmp_webp:
+                        page.save(tmp_webp.name, format="WEBP", quality=quality, optimize=True)
+                        webp_path = tmp_webp.name
+                        st.session_state.temp_files.append(webp_path)
+                    
+                    # Read the WebP file for display
+                    with open(webp_path, 'rb') as f:
+                        webp_data = f.read()
+                    
+                    # Store minimal data in session state
+                    st.session_state.converted_images.append({
+                        'page_num': page_num,
+                        'image_data': webp_data,
+                        'size': (w, h)
+                    })
+                    
+                    successful_conversions += 1
+                    
+                    # Force cleanup
                     del pages
+                    del page
                     gc.collect()
                     
-                except Exception as batch_error:
-                    st.error(f"❌ Error processing pages {batch_start + 1}-{batch_end}: {str(batch_error)}")
-                    continue
+                except Exception as e:
+                    if "first_page" in str(e) or "last_page" in str(e):
+                        # Reached end of PDF
+                        break
+                    else:
+                        st.error(f"❌ Error processing page {page_num}: {str(e)}")
+                        # Continue to next page instead of stopping
+                        continue
                 
-                progress = (batch_end) / total_pages
+                # Update progress
+                progress = page_num / max_pages_to_process
                 progress_bar.progress(progress)
+                
+                # Safety break if processing too many pages
+                if page_num >= max_pages_to_process:
+                    st.warning(f"⚠️ Processed maximum safe limit of {max_pages_to_process} pages")
+                    break
             
             st.session_state.processing_complete = True
             status_text.text("🎉 Conversion completed!")
             st.success(f"✅ Successfully converted {successful_conversions} pages!")
-            del pdf_bytes
-            gc.collect()
+            
+            # Clean up PDF temp file
+            try:
+                if os.path.exists(pdf_path):
+                    os.remove(pdf_path)
+                    st.session_state.temp_files.remove(pdf_path)
+            except:
+                pass
 
         # Display all converted images from session state
         if st.session_state.converted_images:
             st.markdown("---")
             st.markdown("## 📄 Converted Pages")
-            st.info("💡 Pages are preserved in memory. You can download any page without losing others!")
+            st.info("💡 Pages are preserved. You can download any page without losing others!")
             
             # Display Native Ad in the middle of results
             components.html(native_ad_html, height=200)
@@ -279,21 +268,20 @@ if uploaded_file:
                 
                 with col1:
                     st.markdown('<div class="image-container">', unsafe_allow_html=True)
-                    # Recreate BytesIO from stored data
                     img_bytes = io.BytesIO(img_data['image_data'])
                     st.image(img_bytes, caption=f"Page {img_data['page_num']} - {img_data['size'][0]}x{img_data['size'][1]}")
                     st.markdown('</div>', unsafe_allow_html=True)
                 
                 with col2:
-                    page_str = str(img_data['page_num']).zfill(3)  # Converts 1 → 001, 12 → 012
+                    page_str = str(img_data['page_num']).zfill(3)
+                    file_size_mb = len(img_data['image_data']) / (1024 * 1024)
                     st.download_button(
-                    label="⬇️ Download",
-                    data=img_data['image_data'],
-                    file_name=f"page-{page_str}.webp",
-                    mime="image/webp",
+                        label=f"⬇️ Download ({file_size_mb:.1f}MB)",
+                        data=img_data['image_data'],
+                        file_name=f"page-{page_str}.webp",
+                        mime="image/webp",
                         key=f"download_{img_data['page_num']}"
-            )
-
+                    )
                 
                 st.markdown("---")
             
@@ -302,37 +290,48 @@ if uploaded_file:
             if st.button("⬇️ Download All Pages as ZIP"):
                 import zipfile
                 
-                zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-                    for img_data in st.session_state.converted_images:
-                        zip_file.writestr(
-                            f"page_{img_data['page_num']}.webp", 
-                            img_data['image_data']
-                        )
-                
-                zip_buffer.seek(0)
-                st.download_button(
-                    label="💾 Download ZIP File",
-                    data=zip_buffer.getvalue(),
-                    file_name="all_pages.zip",
-                    mime="application/zip",
-                    key="download_zip"
-                )
+                with st.spinner("Creating ZIP file..."):
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+                        for img_data in st.session_state.converted_images:
+                            page_str = str(img_data['page_num']).zfill(3)
+                            zip_file.writestr(
+                                f"page-{page_str}.webp", 
+                                img_data['image_data']
+                            )
+                    
+                    zip_buffer.seek(0)
+                    st.download_button(
+                        label="💾 Download ZIP File",
+                        data=zip_buffer.getvalue(),
+                        file_name="converted_pages.zip",
+                        mime="application/zip",
+                        key="download_zip"
+                    )
             
     except Exception as e:
         st.error(f"❌ Critical Error: {str(e)}")
+        st.info("💡 Try with a smaller PDF file or lower DPI settings")
 
 # Display ads at the bottom
 st.markdown("---")
 st.markdown("### 🔗 Useful Resources")
 components.html(native_ad_html, height=200)
 
-# Clear all button
+# Clear all button with temp file cleanup
 if st.session_state.converted_images:
     if st.button("🗑️ Clear All Pages", type="secondary"):
+        # Clean up temp files
+        for temp_file in st.session_state.temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except:
+                pass
         st.session_state.converted_images = []
         st.session_state.processing_complete = False
         st.session_state.total_pages = 0
+        st.session_state.temp_files = []
         st.rerun()
 
 # ============================
@@ -344,25 +343,6 @@ components.html(banner_ad_html, height=0)
 
 # Popunder (hidden but functional)
 components.html(popunder_ad_html, height=0)
-
-# Installation instructions
-with st.expander("🔧 Installation Help"):
-    st.write("""
-    **To get exact PDF page counts, install one of these:**
-    ```bash
-    pip install pypdf
-    ```
-    or
-    ```bash
-    pip install PyPDF2
-    ```
-    or
-    ```bash
-    pip install PyPDF4
-    ```
-    
-    **The app will work without these, but page count will be estimated.**
-    """)
 
 # Footer with ads
 st.markdown("---")
