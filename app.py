@@ -285,13 +285,15 @@ if uploaded_file:
                     st.markdown('</div>', unsafe_allow_html=True)
                 
                 with col2:
+                    page_str = str(img_data['page_num']).zfill(3)  # Converts 1 → 001, 12 → 012
                     st.download_button(
-                        label=f"⬇️ Download",
-                        data=img_data['image_data'],
-                        file_name=f"page_{img_data['page_num']}.webp",
-                        mime="image/webp",
-                        key=f"download_{img_data['page_num']}"  # Unique key for each button
-                    )
+                    label="⬇️ Download",
+                    data=img_data['image_data'],
+                    file_name=f"page-{page_str}.webp",
+                    mime="image/webp",
+                        key=f"download_{img_data['page_num']}"
+            )
+
                 
                 st.markdown("---")
             
