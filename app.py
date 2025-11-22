@@ -137,9 +137,10 @@ if uploaded_file:
         st.download_button(
             label=f"⬇️ Download Page {i+1} (WebP)",
             data=img_bytes,
-            file_name=f"{i+1}.webp",
+            file_name=f"page-{str(i+1).zfill(3)}.webp",
             mime="image/webp"
         )
+
 
         progress.progress((i + 1) / len(pages))
 
